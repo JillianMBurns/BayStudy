@@ -1,0 +1,367 @@
+---
+title: "Depth Profiles"
+author: "San Francisco Bay Study"
+date: ""
+output:
+  powerpoint_presentation: default
+  slidy_presentation: default
+  beamer_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(patchwork)
+library(deltadata)
+```
+
+```{r, include=FALSE}
+# Get color palette
+library(Polychrome)
+
+# build-in color palette
+set.seed(76543) # this allows the result to be the same every time we run the code
+P55 = createPalette(55,  c("#ff0000", "#00ff00", "#0000ff")) # these are our base colors
+swatch(P55) # prints out a swatch of all the colors in the palette
+names(P55) <- NULL # removes the names of the colors
+```
+
+
+```{r, include=FALSE}
+# Define variables
+# ID what survey we are looking at
+year <- 2025
+month <- "February"
+survey = 2
+currentDate <- Sys.Date()
+
+# file path for lab entry file on u-drive
+folder <- paste("U:\\LTM\\BayStudy_Lab\\", year, "_Data\\", sep = "")
+file <- paste(year, "BS Field Entry.mdb", sep = " ")
+fieldentry_path <- paste(folder, file, sep = "") # path for field entry file
+```
+
+
+```{r, include=FALSE}
+# Get mate data for each station (sometimes we want to plot profiles by Captain); currently the profiles are not plotted by mate
+
+# read in mate info
+matetable<- bridgeAccess(paste(folder, "BSTrawlHistory.mdb", sep = ""),
+             c("Main"))
+
+# read in station/tow data
+stationtable <- bridgeAccess(fieldentry_path,
+                        c("Station", "StationConstants"))
+
+# combine mate and station data 
+station <- stationtable$Station %>% 
+  select(Year, Survey, Station, Date) %>% 
+  mutate(Date = as.POSIXct(Date))
+bay <- stationtable$StationConstants %>% 
+  select(Station, Bay)
+mate_data <- matetable$Main %>% 
+  select(Year, Survey, SamplingDate, Mate) %>% 
+  rename(Date = SamplingDate) #%>% 
+  #mutate(Date = as.character(Date))
+
+# this is the mate data that we will join with the profile data next
+mates <- station %>% 
+  left_join(mate_data, by = c("Year", "Survey", "Date")) %>% 
+  filter(Year %in% c(year)) %>% 
+  rename(Month = Survey)
+```
+
+
+```{r, include=FALSE}  
+# read in data from previous r markdown
+folder_depthloggers <- paste("U:\\LTM\\Bay Study\\Depth Loggers\\Data\\", year, "\\", sep ="")
+file_depthprofile <- paste(year, month, "WQprofiles_forplotting.csv", sep = "")
+depthprofile_path <- paste(folder_depthloggers, file_depthprofile, sep = "")
+
+# clean data 
+Profiles <- read_csv(depthprofile_path) %>% # file we made in previous script
+  mutate(MonthName = month.abb[Month]) %>% # making a column for an abbreviated month name (e.g., January -> Jan)
+  filter(Month == survey) %>% # filter data for what survey we are working on, though data likely only include this survey anyway
+  left_join(mates, by =c("Month", "Station", "Year")) %>% # join mate data
+  mutate(BoatOpCode = ifelse(Mate %in% "Hull", "A", "B")) %>% # make a new column that IDs made by a letter rather than their name
+  #filter(!Offset_Sec < DeployTime) %>% # remove depth readings that are before the actual set time
+  #filter(!Offset_Min > 20) %>% # options to remove depth readings after a certain amount of minutes; this is usually when we are bringing the net in
+  mutate(StationReplicate = as.numeric(paste(Station, replicate, sep = "."))) %>% # make a column with the station and replicate number if you want to plot a station with retows
+  left_join(bay, by = c("Station")) %>% # join bay data - this allows you to split up the profiles by bay, so the plots are not super cluttered (mainly helps with cable out = 200 stations because we have a lot of those)
+  #left_join(channeltows, by = c("Station", "replicate")) %>% # this is old, probably can delete
+  filter(replicate == 1) %>% # use this filter if you only want good tows (e.g., no retows)
+  filter(Depth < 50) %>%  # a quick fix for weird depth readings that are way too deep; these must be errors
+  filter(Depth > 0) #another quick fix when the logger has negative reading (i.e., logger is above the water)
+```
+
+```{r, include=FALSE}
+## The following chunks each produce a slide in a power point. The profiles are separated by the cable out distance.
+
+## To create the powerpoint, click the 'Knit' button at the top of the window. The powerpoint will appear as a file in your working directory. Save this powerpoint here for 2023: U:\LTM\Bay Study\Depth Loggers\Data\2023\Plots. In the powerpoint, you can add comments on any weird profiles. For example, a tow could look weird, but according to the datasheet there was a lot of wind etc. Present the power point at the monhtly meetings as needed. 
+```
+
+
+## Cable Out = Bridles + 50
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  #filter(Depth < 7) %>% # use if there are any bad readings that go too deep
+  filter(CableOut == 50) %>% 
+  #filter(Station == 320) %>% # use if you want to look at one or a smaller amount of stations
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) + # assign the color level to Stations
+  scale_color_manual(values = P55) + # assign colors
+  scale_y_reverse() + # flip y axis so it looks like a depth profile (i.e., surface is on top)
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) 
+```
+
+## Cable Out = Bridles + 100
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  filter(CableOut == 100) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) 
+```
+
+## Cable Out = Bridles + 125
+
+```{r, fig.width=20, fig.height=10, include = F}
+Profiles %>%
+  filter(CableOut == 125) %>%
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28))
+```
+
+## Cable Out = Bridles + 150
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  filter(CableOut == 150) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) 
+```
+
+## Cable Out = Bridles + 175
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  filter(CableOut == 175) %>% 
+  filter(Offset_Min < 16) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) 
+```
+
+## Cable Out = Bridles + 200 - Delta 
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  filter(Bay %in% c(5:7)) %>% 
+  filter(replicate == 1) %>% 
+  filter(CableOut == 200) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) +
+  guides(color = guide_legend(override.aes = list(size = 5))) 
+  #+    facet_wrap(.~as.factor(Bay))
+```
+
+## Cable Out = Bridles + 200 - Suisun Bay
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  filter(Offset_Min < 18) %>% 
+  filter(Bay %in% c(4)) %>% 
+  filter(replicate == 1) %>% 
+  filter(CableOut == 200) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) +
+  guides(color = guide_legend(override.aes = list(size = 5))) +  
+  facet_wrap(.~as.factor(Bay))
+```
+
+## Cable Out = Bridles + 200 - San Pablo Bay
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  #filter(Station == 345) %>% 
+  #filter(Offset_Min < 18) %>% 
+  filter(Bay %in% c(3)) %>% 
+  filter(replicate == 1) %>% 
+  filter(CableOut == 200) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) +
+  guides(color = guide_legend(override.aes = list(size = 5))) 
+  #+facet_wrap(.~as.factor(Bay))
+```
+
+## Cable Out = Bridles + 200 - Central Bay
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  #filter(Station == 345) %>% 
+  #filter(Offset_Min < 18) %>% 
+  filter(Bay %in% c(2)) %>% 
+  filter(replicate == 1) %>% 
+  filter(CableOut == 200) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) +
+  guides(color = guide_legend(override.aes = list(size = 5))) 
+  #+ facet_wrap(.~as.factor(Bay))
+```
+
+## Cable Out = Bridles + 200 - South Bay
+
+```{r, fig.width=20, fig.height=10}
+Profiles %>% 
+  #filter(Station == 345) %>% 
+  #filter(Offset_Min < 18) %>% 
+  filter(Bay %in% c(1)) %>% 
+  filter(replicate == 1) %>% 
+  filter(CableOut == 200) %>% 
+  ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+  geom_line(color = "black") +
+  geom_point(aes(color = as.factor(Station)), size = 4) +
+  scale_color_manual(values = P55) +
+  scale_y_reverse() +
+  labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(text = element_text(size = 28)) +
+  guides(color = guide_legend(override.aes = list(size = 5))) 
+  #+  facet_wrap(.~as.factor(Bay))
+```
+
+```{r, fig.width=12, fig.height=6, include=FALSE}
+## Cable Out = Bridles + 225
+# Only use if we have a tow with 225 out. The file with not knit to a PDF if this is empty. Move the line above out of the chunk if we have tows at 225 out. Also, remove the phrase "include = FALSE" in the chunk title if we want this in the ppt.  
+# Profiles %>%
+#   filter(CableOut == 225) %>%
+#   ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+#   geom_line(color = "black") +
+#   geom_point(aes(color = as.factor(Station)), size = 3) +
+#   scale_color_manual(values = palette) +
+#   scale_y_reverse() +
+#   labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+#   theme_bw() +
+#   theme(legend.position = "bottom") +
+#   #+ guides(color = guide_legend(override.aes = list(size = 5))) +
+#   facet_wrap(~as.factor(MonthName))
+```
+
+
+
+```{r, fig.width=20, fig.height=10, include=FALSE}
+## MWT towed in opposite direction
+# Profiles %>% 
+#   #filter(Bay %in% c(1:2)) %>% 
+#   filter(replicate == 1) %>% 
+#   filter(CableOut == 200) %>% 
+#   #filter(Net == 1 & Direction == 2) %>% # dataset does not have direction right now
+#   #filter(Station == 345) %>% # ID stations where we towed in the opposite direction
+#   ggplot(aes(x=Offset_Min, y=Depth, group = Station)) +
+#   geom_line(color = "black") +
+#   geom_point(aes(color = as.factor(Station)), size = 4) +
+#   scale_color_manual(values = P55) +
+#   scale_y_reverse() +
+#   labs(x="Tow Duration (Minutes)", y = "Depth (Meters)", color = "Station") +
+#   theme_bw() +
+#   theme(legend.position = "bottom") +
+#   theme(text = element_text(size = 19)) +
+#   guides(color = guide_legend(override.aes = list(size = 5))) +  
+#   facet_wrap(.~as.factor(Bay))
+```
+
+Get data and clean to plot speed through the water
+```{r, include=FALSE}
+# read in file made in previous r markdown
+STWdata <- read_csv(paste("U:\\LTM\\Bay Study\\Depth Loggers\\Data\\", year, "\\", year, "STW.csv", sep ="")) %>% 
+  filter(Survey == survey) 
+
+# calculate monthly average
+monthavg <- mean(STWdata$CalcSTW_mpersec, na.rm = T)
+```
+
+Plot speed through the water
+
+*red lines are our target range
+*dashed blue is the survey average
+```{r, fig.width=20, fig.height=10, message=FALSE, warning=FALSE}
+# plot STW with monthly average. Red lines represent the target range
+STWdata %>% 
+  ggplot() +
+  geom_point(aes(x=as.factor(Station), y=CalcSTW_mpersec), shape = 21, size = 6, fill = "grey") +
+  geom_hline(yintercept = 0.67, color = "red", size = 1) +
+  geom_hline(yintercept = 0.95, color = "red", size = 1) +
+  geom_hline(yintercept = monthavg, color = "cyan", linetype = 2, size = 1) +
+  xlab("Station") +
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+        axis.text.y = element_text(size = 28)) +
+    theme(text = element_text(size = 28))
+
+```
+

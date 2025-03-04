@@ -1,0 +1,301 @@
+---
+title: "DoubleEntryCompare"
+author: "Jillian Burns"
+date: "2023-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The purpose of this markdown is to compare the first and second entries of Bay Study data collected in a year. Descriptions of each entry and more information can be found in the 'How-to' word document located here: U:\LTM\Bay Study\StudyDocumentation\SOP\2018 Revision\Referenced Docs\Bay Study_End of Year Entry Proofing and Data Checks_27Oct23.docx. This full comparison was first done in 2022 and then revised in 2023 to be more readable/usable as Jillian goes on maternity leave. The user must be connected to the VPN. The 'How-to' defines three entries used for this comparison:
+1. Entry 1 = office (field entry database)
+2. Entry 2 = Tim (boatdata database)
+3. Entry 3 = office (boatdata_2NDENTRY database)
+
+A compare file is created for each table including station/sample, tow, fish catch, fish length, crab catch, and crab length. The fish tables include jellies and philenes. The compare files are saved outside of R for review in excel using the paper datasheets and office and Tim databases. Any discrepancies are flagged with ‘CHECK’. To resolve the discrepancy, use the paper datasheet to determine which database is correct, include a comment, note which database needed to be edited, make the edit, add your initials and date in the appropriate columns when the error is fixed. When reviewing the excel file, I normally save the file with "_reviewing" at the end of the filename so I know I am making changes to this file in excel.  
+
+This whole process is best to be done step-wise. So, after performing the station data compare, reconcile those errors and re import the data to R. This might solve some issues in the next compares. For example, sometimes a whole station is missed, so if you catch that in the sample/station compare and then enter the data correctly, you will not have to address it in the tow and biological data.
+
+As with during data entry, when the data reviewer ends edits for the day, save a new copy of the database with the day's date to have a daily backup. You will need to edit the 'date' variable as needed to match the working database. 
+
+Libraries
+```{r}
+library(tidyverse)
+library(arsenal)
+library(readxl)
+library(janitor)
+library(lubridate)
+library(openxlsx)
+library(deltadata)
+library(dplyr) #added by Kenji
+```
+
+Read in data
+```{r}
+# assign variable to help read in databases
+year <- 2024 #define the year to get the correct database path
+date <- "6february2025" # this need to match the date in the name of the most recent database (only for entry 2)
+currentDate = Sys.Date()
+
+# file path for office entry of station and tow data (entry 1)
+officeentry_folder <- paste("U:\\LTM\\BayStudy_Lab\\", year, "_Data\\", sep = "")
+officeentry_file <- paste(year, "BS Field Entry.mdb", sep = " ")
+officeentry_path <- paste(officeentry_folder, officeentry_file, sep = "")
+
+# read in the office entry, which just includes station and tow data
+office_stationtow <- bridgeAccess(officeentry_path,
+                           c("Station", "Tow")) #ID tables we need
+
+# file path Tim's entry (entry 2)
+timentry_folder <- paste("U:\\Public\\BayStudy\\Tim\\", year, "\\", sep = "")
+timentry_file <- paste(as.character(year), "_BayStudy_BoatData_", date, ".mdb", sep = "")
+timentry_path <- paste(timentry_folder, timentry_file, sep = "")
+
+# read in Tim's entry
+tim_fullentry <- bridgeAccess(timentry_path,
+                          c("Sample_Entry", "TowEffort_Entry",
+                           "FishLength_Entry", "FishCatch_Entry",
+                           "CrabCatch_Entry", "CrabSize_Entry"))
+
+# file path for office entry of biological data (entry 3)
+officeentry3_folder <- paste("U:\\Public\\BayStudy\\", "Lab2ndEntry\\", year, "\\", sep = "")
+#officeentry3_file <- paste(year, "_BayStudy_BoatData_SecondEntry_", date, ".mdb", sep = "")
+officeentry3_file <- paste(year, "_BayStudy_BoatData_SecondEntry", ".mdb", sep = "") #added by Kenji. This file does not have a date at the end of it. using this backend file, not the serialized one. the file w/out the date has the same save date as the most recent serialized file.
+officeentry3_path <- paste(officeentry3_folder, officeentry3_file, sep = "")
+
+# read in office entry of biological data
+office_bio <- bridgeAccess(officeentry3_path,
+                          c("FishLength_Entry", "FishCatch_Entry",
+                           "CrabCatch_Entry", "CrabSize_Entry"))
+```
+
+Station (aka Sample) data compare
+```{r}
+# read in and clean sample data
+tim_sample <- tim_fullentry$Sample_Entry %>% 
+  mutate(Station = as.integer(Station)) %>% 
+  mutate(Depth = round(Depth, digits = 1)) %>% 
+  select(3:11) %>% 
+  rename_with(~paste0(.,"_tim"), -c(Year, Survey,Station))
+
+office_sample <- office_stationtow$Station %>% 
+  select(Year, Survey, Station, Date, Depth, Secchi, Substrate, Waves, Cover) %>% 
+  mutate(Depth = round(Depth, digits = 1))%>% 
+  rename_with(~paste0(.,"_office"), -c(Year, Survey,Station))
+
+# do compare. Office is X, Tim's is y,
+station_compare <- office_sample %>% 
+  #filter(Survey %in% c(8,9)) %>% #only doing survey 8 now
+  full_join(tim_sample, by = c("Year", "Survey","Station")) %>% 
+  mutate(Date_compare = case_when(Date_office == SampleDate_tim ~ "good", TRUE ~ "CHECK"),
+         Depth_compare = case_when(Depth_office == Depth_tim ~ "good", TRUE ~ "CHECK"),
+         Secchi_compare = case_when(Secchi_office == Secchi_tim ~ "good", TRUE ~ "CHECK"),
+         Substrate_compare = case_when(Substrate_office == SubstrateCode_tim ~ "good", TRUE ~ "CHECK"),
+         Waves_compare = case_when(Waves_office == Waves_tim ~ "good", TRUE ~ "CHECK"),
+         Cover_compare = case_when(Cover_office == CloudCover_tim ~ "good", TRUE ~ "CHECK"))%>% 
+  mutate(Comments = "", DatabaseToEdit = "", EditedBy = "", DateEdited = "")
+
+# save as excel file
+write.xlsx(station_compare, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", "DoubleEntryCompare_Station_", currentDate, ".xlsx", sep = ""))
+```
+
+Tow data compare
+
+Unfortunately, when reading in the coordinate variables into R, the numbers get cut off. Follow these steps to get the correct numbers.
+1. In each access database (office's and Tim's) locate the Tow table ("Tow" in office's and "TowEffort_entry" in Tim's). 
+2. Right-click on the table and select "Export", then "Excel", and name the file 2023TimTow.xlsx for Tim and 2023OfficeTow.xslx for office, and save here: U:\LTM\Bay Study\2023_Data\Proofing\DoubleEntry. Change year in file path as needed. 
+3. In each table, create 4 new columns: StartLatitude2, StartLongitude2,	EndLatitude2,and EndLongitude2. 
+4. For each new column, multiply the corresponding coordinate by 1000. For example, in the StartLatitude2 column, type in "=", select the first cell for StartLatitude, and enter "*1000" (e.g., "=N2*1000) and fill the column in subsequent rows. 
+5. Save the excel file and we will read in this data in the next chunk. 
+
+```{r}
+# read in and clean tow data
+tim_tow <- read_excel(paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", 
+                              year, "TimTow.xlsx", sep = "")) %>% 
+  mutate(Station = as.numeric(Station),
+          Net = as.numeric(Net),
+          TowTime = as.character(TowTime),
+          TowTime = substr(TowTime, start = 12, stop = 16)) %>% 
+  clean_names(., "upper_camel") %>% 
+  rename_with(~paste0(.,"_tim"), -c(Year, Survey,Station, Net))
+office_tow <- read_excel(paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", 
+                              year, "OfficeTow.xlsx", sep = "")) %>% 
+  mutate(Station = as.numeric(Station), #Kenji added station as numeric line to match Tim's column type
+         Net = as.numeric(Net), #Kenji added net as numeric line to match Tim's column type
+         Time= as.character(Time),
+         Time = substr(Time, start = 12, stop = 16)) %>% #may need to rename column 'TowTime' as 'Time' (Col H)
+  clean_names(., "upper_camel") %>% 
+  rename_with(~paste0(.,"_office"), -c(Year, Survey,Station, Net))
+
+# do compare  
+tow_compare <- office_tow %>% 
+  full_join(tim_tow, by = c("Year", "Survey", "Station", "Net")) %>% 
+  mutate(Tow_compare = case_when(Tow_tim == Tow_office ~ "good", TRUE ~ "CHECK"),
+         Time_compare = case_when(TowTime_tim == Time_office ~ "good", TRUE ~ "CHECK"),
+         Tide_compare = case_when(Tide_tim == Tide_office ~ "good", TRUE ~ "CHECK"),
+         Direction_compare = case_when(Direction_tim == Direction_office ~ "good", TRUE ~ "CHECK"),
+         Bearing_compare = case_when(Bearing_tim == Bearing_office ~ "good", TRUE ~ "CHECK"),
+         Catch_compare = case_when(CatchCode_tim == Catch_office ~ "good", TRUE ~ "CHECK"), #Kenji changed 'Catch_office' to 'CatchCode_office'
+         Duration_compare = case_when(Duration_tim == TowDuration_office ~ "good", TRUE ~ "CHECK"), #Kenji changed 'TowDuration_office' to 'Duration_office'
+         MeterStart_compare = case_when(MeterIn_tim == StartMeter_office ~ "good", TRUE ~ "CHECK"), #Kenji changed 'StartMeter_office' to 'MeterIn_office'
+         MeterEnd_compare = case_when(MeterOut_tim == EndMeter_office ~ "good", TRUE ~ "CHECK"), #Kenji changed 'EndMeter_office' to 'MeterOut_office'
+         StartLat_compare = case_when(StartLatitude2_tim == StartLatitude2_office ~ "good", TRUE ~ "CHECK"),
+         StartLong_compare = case_when(StartLongitude2_tim == 
+                                         StartLongitude2_office ~ "good", TRUE ~ "CHECK"),
+         EndLat_compare = case_when(EndLatitude2_tim == EndLatitude2_office ~ "good", TRUE ~ "CHECK"),
+         EndLong_compare = case_when(EndLongitude2_tim == EndLongitude2_office ~ "good", TRUE ~ "CHECK"),
+         Distance_compare = case_when(Distance_tim == Distance_office ~ "good", TRUE ~ "CHECK")) %>% 
+  mutate(Comments = "", DatabaseToEdit = "", EditedBy = "", DateEdited = "")
+
+# save as excel file
+write.xlsx(tow_compare, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", "DoubleEntryCompare_Tow_", currentDate, ".xlsx", sep = ""))
+```
+
+Fish catch compare
+```{r}
+office_catch <- office_bio$FishCatch_Entry %>% 
+  select(3:12)%>% 
+  arrange(Survey, Station, Net, OrganismCode, SizeClass, PlusCount)
+
+tim_catch <- tim_fullentry$FishCatch_Entry %>% 
+  select(3:12)%>% 
+  arrange(Survey, Station, Net, OrganismCode, SizeClass, PlusCount)
+
+# comparison
+catch_compare <- office_catch %>% 
+  full_join(tim_catch, by = c("Year", "Survey", "Station", "Net", "Tow", "OrganismCode", "SizeClass")) %>% 
+  mutate(#SizeCompare = case_when(SizeClass.x == SizeClass.y ~ "good",
+    # T ~ "CHECK"),
+    QtsCaughtCompare = case_when(QtsCaught.x == QtsCaught.y~ "good",
+                                 T ~ "CHECK"),
+    QtsSubCompare = case_when(QtsSubSampled.x == QtsSubSampled.y~ "good",
+                              T ~ "CHECK"),
+    PlusCountCompare = case_when(PlusCount.x == PlusCount.y~ "good",
+                                 T ~ "CHECK"))%>% 
+  mutate(Comments = "", DatabaseToEdit = "", EditedBy = "", DateEdited = "")
+
+# save as excel file
+write.xlsx(catch_compare, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", "DoubleEntryCompare_Catch_", currentDate, ".xlsx", sep = ""))
+```
+
+Fish length compare
+```{r}
+tim_length <- tim_fullentry$FishLength_Entry %>% 
+  select(4:14)%>% 
+  arrange(Survey, Station, Net, Tow, OrganismCode, SizeClass, Length, LengthFrequency, MarkCode, Dead)%>% 
+  group_by(Year, Survey, Station, Net, Tow, OrganismCode, SizeClass, Length) %>% 
+  summarise(TotFreqTim = sum(LengthFrequency))
+
+office_length <- office_bio$FishLength_Entry %>% 
+  select(4:14) %>% 
+  arrange(Survey, Station, Net, Tow, OrganismCode, SizeClass, Length, LengthFrequency, MarkCode, Dead) %>% 
+  group_by(Year, Survey, Station, Net, Tow, OrganismCode, SizeClass, Length) %>% 
+  summarise(TotFreqMain = sum(LengthFrequency))
+
+length_compare <- office_length %>% 
+  full_join(tim_length, by = c("Year", "Survey", "Station", "Net", "Tow", "OrganismCode", "SizeClass",
+                              "Length")) %>% 
+  mutate(TotFreqCompare = case_when(TotFreqMain == TotFreqTim ~ "good", 
+                                 T ~ "CHECK")) %>% 
+  mutate(Comments = "", DatabaseToEdit = "", EditedBy = "", DateEdited = "")
+  
+# save as excel file
+write.xlsx(length_compare, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", "DoubleEntryCompare_Length_", currentDate, ".xlsx", sep = ""))
+```
+
+
+Crab catch compare
+```{r}
+tim_crabcatch <- tim_fullentry$CrabCatch_Entry %>% 
+  select(3:12) %>% 
+  arrange(Survey, Station, Net, OrganismCode, PlusCount)
+
+office_crabcatch <- office_bio$CrabCatch_Entry %>% 
+  select(3:12) %>% 
+  arrange(Survey, Station, Net, OrganismCode, PlusCount)
+
+# compare
+crabcatch_compare <- office_crabcatch %>% 
+  full_join(tim_crabcatch, by = c("Year", "Survey", "Station", "Net", "Tow", "OrganismCode")) %>% 
+  mutate(SizeCompare = case_when(SizeClass.x == SizeClass.y ~ "good",
+                                 T ~ "CHECK"),
+         QtsCaughtCompare = case_when(QtsCaught.x == QtsCaught.y~ "good",
+                                      T ~ "CHECK"),
+         QtsSubCompare = case_when(QtsSubSampled.x == QtsSubSampled.y~ "good",
+                                   T ~ "CHECK"),
+         PlusCountCompare = case_when(PlusCount.x == PlusCount.y~ "good",
+                                      T ~ "CHECK")) %>% 
+  mutate(Comments = "", DatabaseToEdit = "", EditedBy = "", DateEdited = "")
+
+# save as excel file
+write.xlsx(crabcatch_compare, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", "DoubleEntryCompare_CrabCatch_", currentDate, ".xlsx", sep = ""))
+```
+
+Crab size compare
+```{r}
+tim_crabsize <- tim_fullentry$CrabSize_Entry %>% 
+  select(3:12) %>% 
+  arrange(Survey, Station, Net, Tow, OrganismCode, SizeClass, Sex, Size, SizeFrequency) %>% 
+  group_by(Year, Survey, Station, Net, Tow, OrganismCode, SizeClass,Sex, Size) %>% 
+  summarise(TotFreqTim = sum(SizeFrequency))
+office_crabsize <- office_bio$CrabSize_Entry %>% 
+  select(3:12) %>% 
+  arrange(Survey, Station, Net, Tow, OrganismCode, SizeClass, Sex, Size, SizeFrequency) %>% 
+  group_by(Year, Survey, Station, Net, Tow, OrganismCode, SizeClass,Sex, Size) %>% 
+  summarise(TotFreqMain = sum(SizeFrequency))
+
+
+crabsize_compare <- office_crabsize %>% 
+  full_join(tim_crabsize, by = c("Year", "Survey", "Station", "Net", "Tow", "OrganismCode", "SizeClass",
+                            "Sex", "Size")) %>% 
+  mutate(TotFreqCompare = case_when(TotFreqMain == TotFreqTim ~ "good", 
+                                    T ~ "CHECK")) %>% 
+  mutate(Comments = "", DatabaseToEdit = "", EditedBy = "", DateEdited = "")
+
+# save as excel file
+write.xlsx(crabsize_compare, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", "DoubleEntryCompare_CrabSize_", currentDate, ".xlsx", sep = ""))
+```
+
+Salmon clip info compare
+```{r}
+tim_salmon <- tim_fullentry$FishLength_Entry %>% 
+  select(4:14)%>% 
+  arrange(Survey, Station, Net, Tow, OrganismCode, SizeClass, Length, LengthFrequency, MarkCode, Dead)%>% 
+  select(-Dead) %>% 
+  group_by(Survey, Station, Net, Tow, OrganismCode, SizeClass, Length, MarkCode) %>% 
+  summarise(TotFreqTim = sum(LengthFrequency))
+office_salmon <- office_bio$FishLength_Entry %>% 
+  select(4:14)%>% 
+  arrange(Survey, Station, Net, Tow, OrganismCode, SizeClass, Length, LengthFrequency, MarkCode, Dead) %>% 
+  select(-Dead) %>% 
+  group_by(Survey, Station, Net, Tow, OrganismCode, SizeClass, Length, MarkCode) %>% 
+  summarise(TotFreqOffice = sum(LengthFrequency))
+
+
+salmon_compare <- office_salmon %>% 
+ full_join(tim_salmon, by = c("Survey", "Station", "Net", "Tow", "OrganismCode", "SizeClass",
+                            "Length", "MarkCode")) %>% 
+  mutate(TotFreqCompare = case_when(TotFreqOffice == TotFreqTim ~ "good", 
+                                    T ~ "CHECK")) %>% 
+  filter(OrganismCode == "CHISAL")
+
+# save as excel file
+write.xlsx(salmon_compare, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", "DoubleEntryCompare_Salmon_", currentDate, ".xlsx", sep = ""))
+```
+
+Create final file to show all errors are fixed
+
+After errors are fixed in the databases, re run the above code and make sure no more 'CHECK' flags occur. The chunk below creates a file with all the compare tables as separate sheets. 
+
+Sometimes a flag will come up in cells that appear to agree such as depth. Sometimes the rounding is different between the databases. Just comment and ignore these. 
+
+```{r}
+## after fixed errors, re-load updated and make final file to make sure all errors fixed. 
+dataset_names <- list('Station' = station_compare,'Tow' = tow_compare,'FishCatch' = catch_compare, 'FishLength' = length_compare, 'CrabCatch' = crabcatch_compare,  'CrabSize' = crabsize_compare)
+
+# save as excel file
+write.xlsx(dataset_names, file = paste("U:\\LTM\\Bay Study\\", year, "_Data\\Proofing\\DoubleEntry\\", year, "DoubleEntryCompare_All_", currentDate, ".xlsx"))
+```
+

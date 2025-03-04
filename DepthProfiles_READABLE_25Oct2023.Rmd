@@ -1,0 +1,152 @@
+---
+title: "DepthProfiles_Processing"
+author: "Jillian Burns"
+date: "2023-08-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The purpose of this document is to process data downloaded from the reefnet depth logger via Sensus Manager software.
+1. Read in and clean field data: station and tow tables
+2. Calculate STW from flowmeter data and SOG from distance data
+3. Read in and clean depth logger data
+4. Match the cast to station (requires manual step in excel)
+5. Create a dataframe for plotting profiles in a separate Rmarkdown
+
+Notes for processing:
+* The shortcut for a new chunk in R markdown is Ctrl + Alt + I 
+* You need to be connected to the VPN or have connection to the U Drive
+* You need to be able to run the functions for importing tables from Access using the bridegAccess function from the deltadata package. See Trinh's github page (https://github.com/trinhxuann/deltadata) about the if you are having trouble. 
+
+Load Packages
+```{r}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(readxl)
+select <- dplyr::select
+library(deltadata)
+```
+
+Assign Variables 
+
+We do this so we do not have to edit the actual code a bunch of times, and can just plug in the correct year, survey, and file paths one time. 
+```{r}
+# month and year
+year <- 2025
+month <- "February"
+survey = 2
+currentDate <- Sys.Date()
+
+# file path for lab entry file on u-drive
+folder <- paste("U:\\LTM\\BayStudy_Lab\\", year, "_Data\\", sep = "")
+file <- paste(year, "BS Field Entry.mdb", sep = " ")
+fieldentry_path <- paste(folder, file, sep = "") # path for field entry file
+```
+
+Read in Data
+
+Read in station and tow data from the lab entry file
+```{r}
+# the bridgeAccess function actually gets the tables
+stationtow <- bridgeAccess(fieldentry_path,
+                           c("Tow", "Station")) # specify tables you want from the database
+
+# clean tow table
+tow <- stationtow$Tow %>% 
+  mutate(Time = word(Time, 2), 
+         Time = str_sub(Time, 1, nchar(Time)-3)) # grabbing just the time; imported table has unneeded characters in the Time column
+#
+# clean station table
+station <- stationtow$Station %>% 
+  mutate(Date = word(Date, 1)) # grabbing just the date; imported table has unneeded characters in the Date column
+```
+
+Combine station and tow data and arrange in the order we sampled
+```{r}
+# put station, tow info together
+ordered <- station %>% 
+  select(Year, Survey, Station, Date, Depth, Waves) %>% 
+  full_join(tow %>% filter(Net == 1) %>% select(2:5, 7, 11, 12, 16:20), by = c("Year", "Survey", "Station")) %>% # join tow data with needed variables. Only doing MWT because depth logger is only on the MWT. 
+  mutate(TotalMeter = End.Meter-Start.Meter) %>% # calculate total meter
+  mutate(DateTime = ymd_hm(paste(Date, Time, sep = " "))) %>% # make a date/time stamp
+  arrange(DateTime) %>%  # arrange in sample order so we can match cast to station
+  filter(!is.na(DateTime)) # removes any 'na' values
+```
+
+Calculate speed through the water (STW) and speed over ground (SOG)
+```{r}
+STW <- ordered %>% 
+  mutate(CalcDistFlow_meters = (TotalMeter*26873)/999999, 
+         Distance_meters = Distance*1852,
+         VolumeSample_m3 =CalcDistFlow_meters*10.7,
+         CalcSTW_mpersec = CalcDistFlow_meters/(Tow.Duration*60),
+         CalcSOG_mpersec = Distance_meters/(Tow.Duration*60)) %>% 
+  select(Year, Survey, Station, Net, Date, Time, DateTime, Tow.Duration, CableOut,
+         Waves, Tide, Direction, Distance, TotalMeter, CalcSTW_mpersec, CalcSOG_mpersec) %>% 
+  mutate(Distance = round(Distance, digits = 2), 
+         CalcSTW_mpersec = round(CalcSTW_mpersec, digits = 2),
+         CalcSOG_mpersec = round(CalcSOG_mpersec, digits = 2))
+
+# save file; currently just overwriting each month. We could add the date as part of the filename if we want to save subsequent files rather than just over writing. 
+write_csv(STW, file = paste("U:\\LTM\\Bay Study\\Depth Loggers\\Data\\", year, "\\", year, "STW.csv", sep = ""))
+
+```
+
+
+Read in depth logger raw data and clean
+```{r}
+depthraw <- read_csv(paste("U:/LTM/Bay Study/Depth Loggers/Data/", year, "/", month, year, "depthsraw.csv", sep =""), 
+                           col_names = F) # this tells the function that the data does not currently have headers
+
+depthclean <- depthraw %>% 
+  rename(Index = 1, Device_ID = 2, File_ID = 3, Year = 4, Month = 5, Day = 6, Hour = 7,
+         Minute = 8, Second = 9, Offset_Sec = 10, Pressure = 11, Temp_Kelvin = 12) %>% # add headers
+  mutate(Offset_Min = Offset_Sec/60, Depth = (Pressure - 1000)/100,
+         Temp_C = Temp_Kelvin - 273.15) # calculate offset minute(for plotting), depth from pressure, and temperature in Celsius from Kelvin
+```
+
+Prepare data for matching - we do this manually and is helpful to have access to the datasheets
+```{r}
+# arrange depth profile data in order of sampling
+depthordered <- depthclean %>% 
+  mutate(Date = paste(Month, Day, Year, sep = "/"), # create date column
+         Time = paste(Hour, Minute, sep = ":"), # created time column
+         DateTime = paste(Date, Time, sep = " ")) %>% # create date/time stamp
+  mutate(DateTime = mdy_hm(DateTime)) %>% # This tells R the column is a date/time stamp
+  arrange(DateTime) %>% 
+  group_by(Index, DateTime) %>% # Index is just the cast number
+  summarise(minTime = min(Time), .groups = "drop") %>% 
+  mutate(Station = "", setTime = "", replicate = "") # create blanks columns for when we manually match
+
+# grab columns from entered data for match (we put this dataframe in order of sampling earlier)
+stationordered <- ordered %>% 
+  filter(Survey == survey) %>% # filter data for just the survey we are working on
+  select(Survey, Station, Time)
+
+# save files for match outside of R. These files will be in your working directory; open and match
+write_csv(depthordered, file = paste("U:\\LTM\\Bay Study\\Depth Loggers\\Data\\2025\\Matched\\MatchingFiles\\DepthsToMatch_IndexOrdered_", month, year, ".csv", sep = ""))
+write_csv(stationordered, file = paste("U:\\LTM\\Bay Study\\Depth Loggers\\Data\\2025\\Matched\\MatchingFiles\\DepthsToMatch_StationOrdered_", month, year, ".csv", sep = ""))
+```
+
+OUTSIDE OF R (e.g., in excel)
+When you have the two files open, fill in the Station, setTime, and replicate in the IndexOrdered file by match the times for cast (time when depth logger reaches a certain depth under water) and station (time when the net is set). There will be casts that are not associated with a station - you can skip these. However, sometimes we do re-tows and want to review those. The replicate column should be defaulted to 1 for each station, and then you can number any retows as 2, 3, etc. if want to look at them later. Notes on the datasheet will help with this. When you are done, save the file as a .csv with "DepthsIndexMatched_" then the month and year you are working on (e.g., July2023), so the final file name would be DepthsIndexMatched_July2023.csv. Save this file to the u-drive here:U:\LTM\Bay Study\Depth Loggers\Data\2023\Matched. We will read this back into R next.
+
+```{r}
+# read back in matched stations 
+depthsmatched <- read_csv(paste("U:\\LTM\\Bay Study\\Depth Loggers\\Data\\", year, "\\Matched\\", "DepthsIndexMatched_", month, year, ".csv", sep = ""))
+
+# join to profile data with matched stations
+depthsfinal <- depthsmatched %>% 
+  filter(!is.na(Station)) %>% # remove casts that are not associated with a station
+  mutate(DeployTime = as.numeric(setTime - minTime)) %>% 
+  left_join(depthclean, by = "Index") %>% 
+  left_join(STW %>% filter(Survey == survey) %>% select(Station, CableOut), by = "Station")
+
+# save final for plotting profiles
+write_csv(depthsfinal, file = paste("U:\\LTM\\Bay Study\\Depth Loggers\\Data\\", year, "\\", year, month, "WQprofiles_forplotting.csv", sep = ""))
+```
+
